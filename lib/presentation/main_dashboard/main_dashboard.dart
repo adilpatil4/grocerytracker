@@ -2,6 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:sizer/sizer.dart';
 
 import '../../core/app_export.dart';
+import '../../models/grocery_item.dart';
+import '../../models/user_profile.dart';
+import '../../services/auth_service.dart';
+import '../../services/grocery_service.dart';
+import '../../services/notification_service.dart';
 import './widgets/dashboard_header.dart';
 import './widgets/empty_state_widget.dart';
 import './widgets/expiring_items_card.dart';
@@ -9,331 +14,372 @@ import './widgets/quick_action_button.dart';
 import './widgets/quick_stats_card.dart';
 import './widgets/recent_activity_item.dart';
 
+// Add new imports
+
 class MainDashboard extends StatefulWidget {
-  const MainDashboard({Key? key}) : super(key: key);
+  const MainDashboard({super.key});
 
   @override
   State<MainDashboard> createState() => _MainDashboardState();
 }
 
-class _MainDashboardState extends State<MainDashboard>
-    with TickerProviderStateMixin {
+class _MainDashboardState extends State<MainDashboard> {
   int _currentTabIndex = 0;
   bool _isRefreshing = false;
+  bool _isLoading = true;
 
-  // Mock data for dashboard
-  final List<Map<String, dynamic>> _expiringItems = [
-    {
-      "id": 1,
-      "name": "Organic Bananas",
-      "image":
-          "https://images.unsplash.com/photo-1571771894821-ce9b6c11b08e?fm=jpg&q=60&w=3000&ixlib=rb-4.0.3",
-      "location": "Kitchen Counter",
-      "daysRemaining": 1,
-      "category": "Produce"
-    },
-    {
-      "id": 2,
-      "name": "Greek Yogurt",
-      "image":
-          "https://images.unsplash.com/photo-1488477181946-6428a0291777?fm=jpg&q=60&w=3000&ixlib=rb-4.0.3",
-      "location": "Refrigerator",
-      "daysRemaining": 2,
-      "category": "Dairy"
-    },
-    {
-      "id": 3,
-      "name": "Fresh Spinach",
-      "image":
-          "https://images.unsplash.com/photo-1576045057995-568f588f82fb?fm=jpg&q=60&w=3000&ixlib=rb-4.0.3",
-      "location": "Refrigerator",
-      "daysRemaining": 0,
-      "category": "Produce"
-    },
-    {
-      "id": 4,
-      "name": "Whole Milk",
-      "image":
-          "https://images.unsplash.com/photo-1550583724-b2692b85b150?fm=jpg&q=60&w=3000&ixlib=rb-4.0.3",
-      "location": "Refrigerator",
-      "daysRemaining": -1,
-      "category": "Dairy"
-    }
-  ];
+  // Add new state variables for Supabase data
+  UserProfile? _userProfile;
+  List<GroceryItem> _expiringItems = [];
+  Map<String, dynamic> _inventoryStats = {};
+  Map<String, dynamic> _notificationStats = {};
+  List<Map<String, dynamic>> _recentActivities = [];
 
-  final List<Map<String, dynamic>> _recentActivities = [
-    {
-      "id": 1,
-      "type": "scan",
-      "title": "Receipt Scanned",
-      "description": "Whole Foods Market - 12 items added",
-      "timestamp": DateTime.now().subtract(Duration(hours: 2)),
-    },
-    {
-      "id": 2,
-      "type": "add",
-      "title": "Item Added Manually",
-      "description": "Organic Apples added to Refrigerator",
-      "timestamp": DateTime.now().subtract(Duration(hours: 5)),
-    },
-    {
-      "id": 3,
-      "type": "expire",
-      "title": "Expiration Alert",
-      "description": "3 items expiring within 24 hours",
-      "timestamp": DateTime.now().subtract(Duration(hours: 8)),
-    },
-    {
-      "id": 4,
-      "type": "update",
-      "title": "Inventory Updated",
-      "description": "Moved 2 items from Pantry to Freezer",
-      "timestamp": DateTime.now().subtract(Duration(days: 1)),
-    },
-    {
-      "id": 5,
-      "type": "remove",
-      "title": "Items Consumed",
-      "description": "Marked 5 items as used",
-      "timestamp": DateTime.now().subtract(Duration(days: 2)),
+  @override
+  void initState() {
+    super.initState();
+    _loadDashboardData();
+  }
+
+  // Replace mock data loading with real Supabase data
+  Future<void> _loadDashboardData() async {
+    setState(() => _isLoading = true);
+
+    try {
+      // Check if user is authenticated
+      if (!AuthService.instance.isSignedIn) {
+        Navigator.pushReplacementNamed(context, AppRoutes.signIn);
+        return;
+      }
+
+      // Load all dashboard data in parallel
+      final futures = await Future.wait([
+        AuthService.instance.getUserProfile(),
+        GroceryService.instance.getExpiringItems(daysBefore: 3),
+        GroceryService.instance.getInventoryStatistics(),
+        NotificationService.instance.getNotificationStatistics(),
+      ]);
+
+      setState(() {
+        _userProfile = futures[0] as UserProfile?;
+        _expiringItems = futures[1] as List<GroceryItem>;
+        _inventoryStats = futures[2] as Map<String, dynamic>;
+        _notificationStats = futures[3] as Map<String, dynamic>;
+        _isLoading = false;
+      });
+
+      // Send daily notifications check in background
+      _checkDailyNotifications();
+    } catch (error) {
+      print('Error loading dashboard data: $error');
+      setState(() => _isLoading = false);
     }
-  ];
+  }
+
+  Future<void> _checkDailyNotifications() async {
+    try {
+      await NotificationService.instance.checkAndSendDailyNotifications();
+    } catch (error) {
+      // Silent fail for background operations
+      print('Background notification check failed: $error');
+    }
+  }
+
+  Future<void> _refreshData() async {
+    await _loadDashboardData();
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppTheme.lightTheme.scaffoldBackgroundColor,
+      backgroundColor: Colors.grey[50],
       body: SafeArea(
-        child: RefreshIndicator(
-          onRefresh: _handleRefresh,
-          color: AppTheme.lightTheme.colorScheme.primary,
-          child: CustomScrollView(
-            slivers: [
-              // Header
-              SliverToBoxAdapter(
-                child: DashboardHeader(
-                  userName: "Adil",
-                  onProfileTap: () => _navigateToProfile(),
+        child: _isLoading
+            ? Center(
+                child: CircularProgressIndicator(
+                  color: AppTheme.lightTheme.colorScheme.primary,
                 ),
-              ),
-
-              // Quick Stats Cards
-              SliverToBoxAdapter(
-                child: Container(
-                  padding: EdgeInsets.symmetric(horizontal: 4.w),
-                  child: Column(
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: QuickStatsCard(
-                              title: "Expiring Soon",
-                              value:
-                                  "${_expiringItems.where((item) => (item['daysRemaining'] as int) <= 3).length}",
-                              iconName: "warning",
-                              backgroundColor:
-                                  Colors.orange.withValues(alpha: 0.1),
-                              onTap: () => _navigateToInventory(),
-                            ),
-                          ),
-                          SizedBox(width: 4.w),
-                          Expanded(
-                            child: QuickStatsCard(
-                              title: "Total Items",
-                              value: "47",
-                              iconName: "inventory",
-                              onTap: () => _navigateToInventory(),
-                            ),
-                          ),
-                        ],
-                      ),
-                      SizedBox(height: 3.w),
-                      QuickStatsCard(
-                        title: "Recent Scans",
-                        value:
-                            "${(_recentActivities.where((activity) => (activity['type'] as String) == 'scan').length)}",
-                        iconName: "document_scanner",
-                        onTap: () => _navigateToScanHistory(),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-              SizedBox(height: 4.h).sliver,
-
-              // Expiring Soon Section
-              SliverToBoxAdapter(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 4.w),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            "Expiring Soon",
-                            style: AppTheme.lightTheme.textTheme.titleLarge
-                                ?.copyWith(
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                          TextButton(
-                            onPressed: () => _navigateToInventory(),
-                            child: Text(
-                              "View All",
-                              style: AppTheme.lightTheme.textTheme.titleSmall
-                                  ?.copyWith(
-                                color: AppTheme.lightTheme.colorScheme.primary,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    SizedBox(height: 2.h),
-                    _expiringItems.isNotEmpty
-                        ? Container(
-                            height: 25.h,
-                            child: ListView.builder(
-                              scrollDirection: Axis.horizontal,
-                              padding: EdgeInsets.symmetric(horizontal: 4.w),
-                              itemCount: _expiringItems.length,
-                              itemBuilder: (context, index) {
-                                return ExpiringItemsCard(
-                                  item: _expiringItems[index],
-                                  onTap: () => _navigateToItemDetail(
-                                      _expiringItems[index]['id']),
-                                );
-                              },
-                            ),
-                          )
-                        : Padding(
-                            padding: EdgeInsets.symmetric(horizontal: 4.w),
-                            child: Container(
-                              height: 20.h,
-                              child: EmptyStateWidget(
-                                title: "No Items Expiring",
-                                description:
-                                    "All your items are fresh! Scan a receipt to add more items.",
-                                iconName: "check_circle",
-                                buttonText: "Scan Receipt",
-                                onButtonPressed: () =>
-                                    _navigateToReceiptScanning(),
-                              ),
-                            ),
-                          ),
-                  ],
-                ),
-              ),
-
-              SizedBox(height: 4.h).sliver,
-
-              // Recent Activity Section
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 4.w),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        "Recent Activity",
-                        style:
-                            AppTheme.lightTheme.textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      TextButton(
-                        onPressed: () => _navigateToScanHistory(),
-                        child: Text(
-                          "View All",
-                          style: AppTheme.lightTheme.textTheme.titleSmall
-                              ?.copyWith(
-                            color: AppTheme.lightTheme.colorScheme.primary,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-              SizedBox(height: 2.h).sliver,
-
-              // Recent Activity List
-              SliverList(
-                delegate: SliverChildBuilderDelegate(
-                  (context, index) {
-                    if (index >= 3) return null; // Show only first 3 activities
-                    return Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 4.w),
-                      child: RecentActivityItem(
-                        activity: _recentActivities[index],
-                        onTap: () =>
-                            _handleActivityTap(_recentActivities[index]),
-                      ),
-                    );
-                  },
-                  childCount: _recentActivities.length > 3
-                      ? 3
-                      : _recentActivities.length,
-                ),
-              ),
-
-              SizedBox(height: 4.h).sliver,
-
-              // Quick Actions Section
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 4.w),
+              )
+            : RefreshIndicator(
+                onRefresh: _refreshData,
+                child: SingleChildScrollView(
+                  padding: EdgeInsets.all(16.w),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        "Quick Actions",
-                        style:
-                            AppTheme.lightTheme.textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
+                      // Dashboard Header with real user data
+                      DashboardHeader(
+                        userName: _userProfile?.fullName ?? 'User',
+                        onNotificationTap: () {
+                          Navigator.pushNamed(context, AppRoutes.notifications);
+                        },
                       ),
-                      SizedBox(height: 2.h),
+
+                      SizedBox(height: 24.h),
+
+                      // Quick Stats with real data
                       Row(
                         children: [
                           Expanded(
-                            child: QuickActionButton(
-                              title: "Scan Receipt",
-                              iconName: "document_scanner",
-                              onTap: () => _navigateToReceiptScanning(),
+                            child: QuickStatsCard(
+                              title: 'Total Items',
+                              value: (_inventoryStats['total_items'] ?? 0)
+                                  .toString(),
+                              iconName: 'inventory',
+                              backgroundColor: Colors.blue,
+                              onTap: () {
+                                Navigator.pushNamed(
+                                    context, AppRoutes.inventoryManagement);
+                              },
                             ),
                           ),
-                          SizedBox(width: 4.w),
+                          SizedBox(width: 16.w),
                           Expanded(
-                            child: QuickActionButton(
-                              title: "Add Item",
-                              iconName: "add_circle",
-                              onTap: () => _navigateToAddItem(),
+                            child: QuickStatsCard(
+                              title: 'Expiring Soon',
+                              value: _expiringItems.length.toString(),
+                              iconName: 'schedule',
+                              backgroundColor: _expiringItems.isNotEmpty
+                                  ? Colors.orange
+                                  : Colors.green,
+                              onTap: () {
+                                if (_expiringItems.isNotEmpty) {
+                                  _showExpiringItemsBottomSheet();
+                                }
+                              },
                             ),
                           ),
                         ],
                       ),
-                      SizedBox(height: 3.w),
-                      QuickActionButton(
-                        title: "View Full Inventory",
-                        iconName: "inventory",
-                        onTap: () => _navigateToInventory(),
+
+                      SizedBox(height: 16.h),
+
+                      Row(
+                        children: [
+                          Expanded(
+                            child: QuickStatsCard(
+                              title: 'Health Score',
+                              value:
+                                  '${_inventoryStats['health_score'] ?? 100}%',
+                              iconName: 'health_and_safety',
+                              backgroundColor:
+                                  (_inventoryStats['health_score'] ?? 100) >= 80
+                                      ? Colors.green
+                                      : (_inventoryStats['health_score'] ??
+                                                  100) >=
+                                              60
+                                          ? Colors.orange
+                                          : Colors.red,
+                              onTap: () {},
+                            ),
+                          ),
+                          SizedBox(width: 16.w),
+                          Expanded(
+                            child: QuickStatsCard(
+                              title: 'Total Value',
+                              value:
+                                  '\$${(_inventoryStats['total_value'] ?? 0).toStringAsFixed(0)}',
+                              iconName: 'attach_money',
+                              backgroundColor: Colors.purple,
+                              onTap: () {},
+                            ),
+                          ),
+                        ],
                       ),
+
+                      SizedBox(height: 32.h),
+
+                      // Expiring Soon Section with real data
+                      if (_expiringItems.isNotEmpty) ...[
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              'Expiring Soon',
+                              style: GoogleFonts.inter(
+                                fontSize: 20.sp,
+                                fontWeight: FontWeight.bold,
+                                color:
+                                    AppTheme.lightTheme.colorScheme.onSurface,
+                              ),
+                            ),
+                            TextButton(
+                              onPressed: () => _showExpiringItemsBottomSheet(),
+                              child: Text(
+                                'View All',
+                                style: GoogleFonts.inter(
+                                  fontSize: 14.sp,
+                                  fontWeight: FontWeight.w500,
+                                  color:
+                                      AppTheme.lightTheme.colorScheme.primary,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        SizedBox(height: 16.h),
+                        Column(
+                          children: _expiringItems
+                              .take(3)
+                              .map((item) => Padding(
+                                    padding: EdgeInsets.only(bottom: 12.h),
+                                    child: ExpiringItemsCard(
+                                      item: {
+                                        'name': item.name,
+                                        'daysRemaining':
+                                            item.daysUntilExpiration,
+                                        'category': item.categoryDisplayName,
+                                        'location': item.storageDisplayName,
+                                      },
+                                      onTap: () {
+                                        Navigator.pushNamed(
+                                          context,
+                                          AppRoutes.itemDetail,
+                                          arguments: item.id,
+                                        );
+                                      },
+                                    ),
+                                  ))
+                              .toList(),
+                        ),
+                      ] else ...[
+                        EmptyStateWidget(
+                          title: 'All Items Fresh!',
+                          description:
+                              'No items are expiring soon. Great job managing your inventory!',
+                          iconName: 'check_circle',
+                          buttonText: 'Add New Items',
+                          onButtonPressed: () {
+                            Navigator.pushNamed(context, AppRoutes.addItem);
+                          },
+                        ),
+                      ],
+
+                      SizedBox(height: 32.h),
+
+                      // Recent Activity Section
+                      Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 4.w),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              "Recent Activity",
+                              style: AppTheme.lightTheme.textTheme.titleLarge
+                                  ?.copyWith(
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            TextButton(
+                              onPressed: () => _navigateToScanHistory(),
+                              child: Text(
+                                "View All",
+                                style: AppTheme.lightTheme.textTheme.titleSmall
+                                    ?.copyWith(
+                                  color:
+                                      AppTheme.lightTheme.colorScheme.primary,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      SizedBox(height: 2.h),
+
+                      // Recent Activity List - Convert from Sliver to regular widgets
+                      if (_recentActivities.isNotEmpty)
+                        Column(
+                          children: _recentActivities
+                              .take(3)
+                              .map((activity) => Padding(
+                                    padding: EdgeInsets.symmetric(
+                                        horizontal: 4.w, vertical: 4.h),
+                                    child: RecentActivityItem(
+                                      activity: activity,
+                                      onTap: () => _handleActivityTap(activity),
+                                    ),
+                                  ))
+                              .toList(),
+                        ),
+
+                      SizedBox(height: 4.h),
+
+                      // Quick Actions with updated navigation
+                      Text(
+                        'Quick Actions',
+                        style: GoogleFonts.inter(
+                          fontSize: 20.sp,
+                          fontWeight: FontWeight.bold,
+                          color: AppTheme.lightTheme.colorScheme.onSurface,
+                        ),
+                      ),
+
+                      SizedBox(height: 16.h),
+
+                      Row(
+                        children: [
+                          Expanded(
+                            child: QuickActionButton(
+                              title: 'Scan Receipt',
+                              iconName: 'camera_alt',
+                              backgroundColor: Colors.green,
+                              onTap: () {
+                                Navigator.pushNamed(
+                                    context, AppRoutes.receiptScanning);
+                              },
+                            ),
+                          ),
+                          SizedBox(width: 16.w),
+                          Expanded(
+                            child: QuickActionButton(
+                              title: 'Add Item',
+                              iconName: 'add_circle',
+                              backgroundColor: Colors.blue,
+                              onTap: () {
+                                Navigator.pushNamed(context, AppRoutes.addItem);
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+
+                      SizedBox(height: 16.h),
+
+                      Row(
+                        children: [
+                          Expanded(
+                            child: QuickActionButton(
+                              title: 'Shopping List',
+                              iconName: 'shopping_cart',
+                              backgroundColor: Colors.orange,
+                              onTap: () {
+                                Navigator.pushNamed(
+                                    context, AppRoutes.shoppingList);
+                              },
+                            ),
+                          ),
+                          SizedBox(width: 16.w),
+                          Expanded(
+                            child: QuickActionButton(
+                              title: 'View Inventory',
+                              iconName: 'inventory',
+                              backgroundColor: Colors.purple,
+                              onTap: () {
+                                Navigator.pushNamed(
+                                    context, AppRoutes.inventoryManagement);
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+
+                      SizedBox(height: 20.h),
                     ],
                   ),
                 ),
               ),
-
-              SizedBox(height: 10.h).sliver, // Bottom padding for FAB
-            ],
-          ),
-        ),
       ),
 
       // Bottom Navigation Bar
@@ -415,6 +461,77 @@ class _MainDashboardState extends State<MainDashboard>
           iconName: 'camera_alt',
           size: 7.w,
           color: AppTheme.lightTheme.colorScheme.onPrimary,
+        ),
+      ),
+    );
+  }
+
+  void _showExpiringItemsBottomSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        height: MediaQuery.of(context).size.height * 0.7,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Column(
+          children: [
+            Container(
+              padding: EdgeInsets.all(16.w),
+              child: Column(
+                children: [
+                  Container(
+                    width: 40.w,
+                    height: 4.h,
+                    decoration: BoxDecoration(
+                      color: Colors.grey[300],
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  SizedBox(height: 16.h),
+                  Text(
+                    'Items Expiring Soon',
+                    style: GoogleFonts.inter(
+                      fontSize: 18.sp,
+                      fontWeight: FontWeight.bold,
+                      color: AppTheme.lightTheme.colorScheme.onSurface,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ListView.builder(
+                padding: EdgeInsets.symmetric(horizontal: 16.w),
+                itemCount: _expiringItems.length,
+                itemBuilder: (context, index) {
+                  final item = _expiringItems[index];
+                  return Padding(
+                    padding: EdgeInsets.only(bottom: 12.h),
+                    child: ExpiringItemsCard(
+                      item: {
+                        'name': item.name,
+                        'daysRemaining': item.daysUntilExpiration,
+                        'category': item.categoryDisplayName,
+                        'location': item.storageDisplayName,
+                      },
+                      onTap: () {
+                        Navigator.pop(context);
+                        Navigator.pushNamed(
+                          context,
+                          AppRoutes.itemDetail,
+                          arguments: item.id,
+                        );
+                      },
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
         ),
       ),
     );
